@@ -7,7 +7,7 @@ import com.battleship.model.enums.StatusEffect;
 /**
  * Base class untuk semua kapal dalam game. Mendefinisikan atribut dasar,
  * sistem HP, sistem status efek, dan dua variasi serangan (overloading).
- * Subclass WAJIB mengimplementasikan takeTurn() dan getStatusDisplay().
+ * Subclass WAJIB mengimplementasikan takeTurn().
  */
 public abstract class Ship {
 
@@ -164,6 +164,4 @@ public abstract class Ship {
     // -------------------------------------------------------------------------
 
     public abstract void takeTurn(Ship opponent);
-
-    public abstract String getStatusDisplay();
 }

@@ -1,7 +1,10 @@
 package com.battleship.system;
 
 import java.util.*;
+import com.battleship.model.Mage;
 import com.battleship.model.PlayerShip;
+import com.battleship.model.enums.CannonballType;
+import com.battleship.model.enums.Element;
 
 /**
  * Sistem reward terinspirasi Balatro — pool besar kartu, 3 dipilih acak
@@ -48,6 +51,116 @@ public class RewardCard {
 
     public String getDisplay() {
         return String.format("%-28s -- %s", title, description);
+    }
+
+    // -------------------------------------------------------------------------
+    // Effect Application
+    // -------------------------------------------------------------------------
+
+    private static final String[] MAGE_NAMES = {
+        "Ignis", "Aquara", "Voltus", "Pyra", "Hydra", "Tempest",
+        "Ember", "Cascade", "Thunder", "Inferno", "Torrent", "Zephyr",
+        "Cinder", "Deluge", "Gale", "Blaze", "Surge", "Frost", "Ash", "Mist"
+    };
+
+    private static Mage randomMage(int basePower, Random rng) {
+        return new Mage(
+            MAGE_NAMES[rng.nextInt(MAGE_NAMES.length)],
+            Element.values()[rng.nextInt(Element.values().length)],
+            basePower, rng
+        );
+    }
+
+    /**
+     * Terapkan efek kartu reward ke PlayerShip.
+     * Semua tipe kecuali UPGRADE_MAGE_POWER diproses di sini.
+     * (UPGRADE_MAGE_POWER lewat sini hanya saat roster kosong → fallback heal.)
+     */
+    public List<String> apply(PlayerShip player) {
+        List<String> lines = new ArrayList<>();
+        Random rng = new Random();
+
+        switch (type) {
+            case RECRUIT_MAGE -> {
+                if (player.getMageCount() >= 5) {
+                    player.heal(45);
+                    lines.add("Roster penuh. Reward diganti heal kecil.");
+                    break;
+                }
+                Mage newMage = randomMage(18 + rng.nextInt(18), rng);
+                player.recruitMage(newMage);
+                lines.add("Mage baru bergabung: " + newMage.getInfo(true));
+                lines.add("Jurus: " + newMage.getSpellType().getFullDescription());
+                int count = player.countMageByElement(newMage.getElement());
+                if (count >= 2) {
+                    lines.add(String.format("Sinergy terbentuk: %dx %s -> +%d%% magic damage",
+                            count, newMage.getElement().sym(), count >= 3 ? 40 : 20));
+                }
+            }
+            case HEAL_SMALL -> {
+                int before = player.getCurrentHp();
+                player.heal(45);
+                lines.add(String.format("Perbaikan cepat. HP: %d -> %d", before, player.getCurrentHp()));
+            }
+            case HEAL_LARGE -> {
+                int before = player.getCurrentHp();
+                player.heal(80);
+                lines.add(String.format("Perbaikan total. HP: %d -> %d", before, player.getCurrentHp()));
+            }
+            case UPGRADE_CANNON -> {
+                int before = player.getBaseDamage();
+                player.upgradeBaseDamage(7);
+                lines.add(String.format("Meriam di-upgrade. Damage: %d -> %d", before, player.getBaseDamage()));
+            }
+            case UPGRADE_MAGE_POWER -> {
+                // Fallback ketika roster kosong (dipanggil dari GameManager)
+                player.heal(45);
+                lines.add("Tidak ada Mage. Reward diganti heal kecil.");
+            }
+            case ADD_POTION -> {
+                if (!player.addPotion()) {
+                    player.heal(45);
+                    lines.add("Potion penuh. Reward diganti heal kecil.");
+                } else {
+                    lines.add(String.format("+1 Potion. Sisa sekarang: %d/3", player.getPotions()));
+                }
+            }
+            case ADD_EXPLOSIVE -> {
+                player.addAmmo(CannonballType.EXPLOSIVE, 3);
+                lines.add("Amunisi Ledak +3. Stok: " + player.getAmmoCount(CannonballType.EXPLOSIVE));
+            }
+            case ADD_CHAIN -> {
+                player.addAmmo(CannonballType.CHAIN, 3);
+                lines.add("Amunisi Rantai +3. Stok: " + player.getAmmoCount(CannonballType.CHAIN));
+            }
+            case ADD_GRAPESHOT -> {
+                player.addAmmo(CannonballType.GRAPESHOT, 3);
+                lines.add("Amunisi Angin +3. Stok: " + player.getAmmoCount(CannonballType.GRAPESHOT));
+            }
+            case UPGRADE_ALL_MAGE_SMALL -> {
+                for (Mage mage : player.getRoster()) {
+                    mage.upgradePower(5);
+                }
+                lines.add("Ritual kolektif aktif. Semua Mage +5 Magic Power.");
+            }
+            case DOUBLE_CANNON_DMG -> {
+                lines.add("Kapal Berkibar aktif. Cannon damage x2 di battle berikutnya.");
+            }
+        }
+        return lines;
+    }
+
+    /**
+     * Terapkan UPGRADE_MAGE_POWER ke Mage spesifik di index tertentu.
+     * Hanya dipanggil ketika roster tidak kosong (GUI sudah memilih Mage).
+     */
+    public List<String> applyMageUpgrade(PlayerShip player, int mageIndex) {
+        List<String> lines = new ArrayList<>();
+        Mage mage = player.getRoster().get(mageIndex);
+        int before = mage.getMagicPower();
+        mage.upgradePower(18);
+        lines.add(String.format("%s di-upgrade. Power: %d -> %d", mage.getName(), before, mage.getMagicPower()));
+        return lines;
     }
 
     // -------------------------------------------------------------------------

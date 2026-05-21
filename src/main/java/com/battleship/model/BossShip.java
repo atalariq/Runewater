@@ -1,5 +1,9 @@
 package com.battleship.model;
 
+import com.battleship.engine.AttackContext;
+import com.battleship.engine.AttackType;
+import com.battleship.engine.DamagePipeline;
+import com.battleship.engine.DamageResult;
 import com.battleship.model.enums.EnemyTrait;
 
 /**
@@ -45,13 +49,20 @@ public class BossShip extends EnemyShip {
 
         log.append(String.format("%n  [BOSS] %s -- %s bergerak!%n", bossTitle, getName()));
 
-        int rawDamage   = effectiveDamage(getBaseDamage());
-        int finalDamage = getBerserkerDamage(rawDamage);
-        opponent.takeDamage(finalDamage);
+        boolean isBerserker = getTrait() == EnemyTrait.BERSERKER
+                && (double) getCurrentHp() / getMaxHp() < 0.5;
 
-        String berserkerTag = (getTrait() == EnemyTrait.BERSERKER && finalDamage > rawDamage)
-                ? " [BERSERKER!]" : "";
-        log.append(String.format("  >> Serangan Utama: %d damage%s%n", finalDamage, berserkerTag));
+        AttackContext ctx = new AttackContext(
+            this, opponent, AttackType.PHYSICAL, getBaseDamage(),
+            1.0, 1.0, null, null, null,
+            EnemyTrait.NONE,
+            isBerserker
+        );
+        DamageResult result = DamagePipeline.resolve(ctx);
+        opponent.takeDamage(result.finalDamage());
+
+        String berserkerTag = isBerserker ? " [BERSERKER!]" : "";
+        log.append(String.format("  >> Serangan Utama: %d damage%s%n", result.finalDamage(), berserkerTag));
 
         if (isEnraged() && opponent.isAlive()) {
             int rageDamage = Math.max(1,
@@ -62,21 +73,5 @@ public class BossShip extends EnemyShip {
         return log.toString();
     }
 
-    // -------------------------------------------------------------------------
-    // Describable Implementation
-    // -------------------------------------------------------------------------
 
-    @Override
-    public String getFullDescription() {
-        String rageTag = isEnraged() ? " *** ENRAGED! ***" : "";
-        return String.format(
-            "  [BOSS] %s -- %-18s%s%n  HP: %s | Elemen: %-5s | Dmg: ~%d | Sifat: %s",
-            bossTitle, getName(), rageTag,
-            getHpBar(), getElement().sym(), getBaseDamage(), getTrait().displayName);
-    }
-
-    @Override
-    public String getStatusDisplay() {
-        return getFullDescription();
-    }
 }

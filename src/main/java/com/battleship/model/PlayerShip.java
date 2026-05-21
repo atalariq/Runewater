@@ -1,7 +1,10 @@
 package com.battleship.model;
 
 import java.util.*;
-import com.battleship.interfaces.Describable;
+import com.battleship.engine.AttackContext;
+import com.battleship.engine.AttackType;
+import com.battleship.engine.DamagePipeline;
+import com.battleship.engine.DamageResult;
 import com.battleship.interfaces.MagicCastable;
 import com.battleship.model.enums.*;
 
@@ -9,7 +12,7 @@ import com.battleship.model.enums.*;
  * Kapal yang dikendalikan pemain. Menyimpan roster Mage (maks 5),
  * inventori cannonball, potion, dan mengelola sistem sinergy elemen.
  */
-public class PlayerShip extends Ship implements MagicCastable, Describable {
+public class PlayerShip extends Ship implements MagicCastable {
 
     private final List<Mage>                  roster;
     private static final int                  MAX_MAGE    = 5;
@@ -129,18 +132,30 @@ public class PlayerShip extends Ship implements MagicCastable, Describable {
     // -------------------------------------------------------------------------
 
     public int fireCannonball(CannonballType type, Ship target) {
+        return fireCannonball(type, target, 1.0);
+    }
+
+    public int fireCannonball(CannonballType type, Ship target, double extraMult) {
         int stock = getAmmoCount(type);
         if (type != CannonballType.IRON && stock <= 0) return -1;
 
         if (type != CannonballType.IRON) ammo.put(type, stock - 1);
 
-        int damage = effectiveDamage((int)(getBaseDamage() * type.dmgMult));
+        int baseDmg = (int)(getBaseDamage() * type.dmgMult * extraMult);
+
+        AttackContext ctx = new AttackContext(
+            this, target, AttackType.PHYSICAL, baseDmg,
+            1.0, 1.0, type, null, null,
+            (target instanceof EnemyShip es) ? es.getTrait() : EnemyTrait.NONE,
+            false
+        );
+        DamageResult result = DamagePipeline.resolve(ctx);
 
         if (type.appliesBurn) target.applyStatus(StatusEffect.BURNED,   3);
         if (type.appliesWeak) target.applyStatus(StatusEffect.WEAKENED, 3);
 
-        target.takeDamage(damage);
-        return damage;
+        target.takeDamage(result.finalDamage());
+        return result.finalDamage();
     }
 
     // -------------------------------------------------------------------------
@@ -151,10 +166,17 @@ public class PlayerShip extends Ship implements MagicCastable, Describable {
     public int castMagic(Ship target, Mage mage) {
         double elemMult    = mage.getElement().getMultiplier(target.getElement());
         double synergyMult = getSynergyMult(mage.getElement());
-        int    rawDamage   = (int)((getBaseDamage() + mage.getMagicPower()) * elemMult * synergyMult);
-        int    damage      = effectiveDamage(rawDamage);
-        target.takeDamage(damage);
-        return damage;
+        int    baseDmg     = getBaseDamage() + mage.getMagicPower();
+
+        AttackContext ctx = new AttackContext(
+            this, target, AttackType.MAGIC, baseDmg,
+            elemMult, synergyMult, null, null, mage.getElement(),
+            (target instanceof EnemyShip es) ? es.getTrait() : EnemyTrait.NONE,
+            false
+        );
+        DamageResult result = DamagePipeline.resolve(ctx);
+        target.takeDamage(result.finalDamage());
+        return result.finalDamage();
     }
 
     @Override
@@ -166,78 +188,128 @@ public class PlayerShip extends Ship implements MagicCastable, Describable {
         mage.markSpellUsed();
         double synergyMult = getSynergyMult(mage.getElement());
         int    basePower   = getBaseDamage() + mage.getMagicPower();
-        StringBuilder result = new StringBuilder();
+        StringBuilder log = new StringBuilder();
+
+        EnemyTrait defenderTrait = (target instanceof EnemyShip es) ? es.getTrait() : EnemyTrait.NONE;
 
         switch (mage.getSpellType()) {
             case INFERNO: {
-                int damage = (int)(basePower * 3.0 * synergyMult);
-                target.takeDamage(damage);
-                result.append(String.format(
+                int baseDmg = (int)(basePower * 3.0);
+                AttackContext ctx = new AttackContext(
+                    this, target, AttackType.MAGIC, baseDmg,
+                    1.0, synergyMult, null, mage.getSpellType(), mage.getElement(),
+                    defenderTrait, false
+                );
+                DamageResult dr = DamagePipeline.resolve(ctx);
+                target.takeDamage(dr.finalDamage());
+                applyReflected(dr);
+                log.append(String.format(
                         "  *** INFERNO! %s membakar segalanya! Damage: %d ***",
-                        mage.getName(), damage));
+                        mage.getName(), dr.finalDamage()));
                 break;
             }
             case IGNITE: {
                 double elemMult = mage.getElement().getMultiplier(target.getElement());
-                int    damage   = (int)(basePower * elemMult * synergyMult);
-                target.takeDamage(damage);
+                int    baseDmg  = basePower;
+                AttackContext ctx = new AttackContext(
+                    this, target, AttackType.MAGIC, baseDmg,
+                    elemMult, synergyMult, null, mage.getSpellType(), mage.getElement(),
+                    defenderTrait, false
+                );
+                DamageResult dr = DamagePipeline.resolve(ctx);
+                target.takeDamage(dr.finalDamage());
+                applyReflected(dr);
                 target.applyStatus(StatusEffect.BURNED, 3);
-                result.append(String.format(
+                log.append(String.format(
                         "  *** IGNITE! Damage: %d + %s BURNED 3 turn! ***",
-                        damage, target.getName()));
+                        dr.finalDamage(), target.getName()));
                 break;
             }
             case TIDAL_WAVE: {
                 double elemMult = mage.getElement().getMultiplier(target.getElement());
-                int    damage   = (int)(basePower * 2.0 * elemMult * synergyMult);
-                target.takeDamage(damage);
+                int    baseDmg  = (int)(basePower * 2.0);
+                AttackContext ctx = new AttackContext(
+                    this, target, AttackType.MAGIC, baseDmg,
+                    elemMult, synergyMult, null, mage.getSpellType(), mage.getElement(),
+                    defenderTrait, false
+                );
+                DamageResult dr = DamagePipeline.resolve(ctx);
+                target.takeDamage(dr.finalDamage());
+                applyReflected(dr);
                 int hpBefore = getCurrentHp();
                 heal(35);
-                result.append(String.format(
+                log.append(String.format(
                         "  *** TIDAL WAVE! Damage: %d + Healed +%d HP ***",
-                        damage, getCurrentHp() - hpBefore));
+                        dr.finalDamage(), getCurrentHp() - hpBefore));
                 break;
             }
             case FREEZE: {
                 double elemMult = mage.getElement().getMultiplier(target.getElement());
-                int    damage   = (int)(basePower * elemMult * synergyMult);
-                target.takeDamage(damage);
+                int    baseDmg  = basePower;
+                AttackContext ctx = new AttackContext(
+                    this, target, AttackType.MAGIC, baseDmg,
+                    elemMult, synergyMult, null, mage.getSpellType(), mage.getElement(),
+                    defenderTrait, false
+                );
+                DamageResult dr = DamagePipeline.resolve(ctx);
+                target.takeDamage(dr.finalDamage());
+                applyReflected(dr);
                 target.applyStatus(StatusEffect.FROZEN, 1);
-                result.append(String.format(
+                log.append(String.format(
                         "  *** FREEZE! Damage: %d + %s FROZEN (skip + kebal status)! ***",
-                        damage, target.getName()));
+                        dr.finalDamage(), target.getName()));
                 break;
             }
             case CHAIN_BOLT: {
                 double elemMult = mage.getElement().getMultiplier(target.getElement());
-                int    damage   = (int)(basePower * 2.5 * elemMult * synergyMult);
-                target.takeDamage(damage);
+                int    baseDmg  = (int)(basePower * 2.5);
+                AttackContext ctx = new AttackContext(
+                    this, target, AttackType.MAGIC, baseDmg,
+                    elemMult, synergyMult, null, mage.getSpellType(), mage.getElement(),
+                    defenderTrait, false
+                );
+                DamageResult dr = DamagePipeline.resolve(ctx);
+                target.takeDamage(dr.finalDamage());
+                applyReflected(dr);
                 target.applyStatus(StatusEffect.WEAKENED, 3);
-                result.append(String.format(
+                log.append(String.format(
                         "  *** CHAIN BOLT! Damage: %d + %s WEAKENED 3 turn! ***",
-                        damage, target.getName()));
+                        dr.finalDamage(), target.getName()));
                 break;
             }
             case OVERCHARGE: {
-                result.append("  *** OVERCHARGE! Semua Mage menyerang serentak!\n");
+                log.append("  *** OVERCHARGE! Semua Mage menyerang serentak!\n");
                 int totalDamage = 0;
                 for (Mage m : roster) {
                     double elemMult = m.getElement().getMultiplier(target.getElement());
-                    int    hit      = (int)((getBaseDamage() + m.getMagicPower()) * 1.2 * elemMult);
-                    target.takeDamage(hit);
-                    totalDamage += hit;
-                    result.append(String.format("    - %s (%s): %d damage%n",
-                            m.getName(), m.getElement().sym(), hit));
+                    int    baseDmg  = (int)((getBaseDamage() + m.getMagicPower()) * 1.2);
+                    AttackContext ctx = new AttackContext(
+                        this, target, AttackType.MAGIC, baseDmg,
+                        elemMult, 1.0, null, mage.getSpellType(), m.getElement(),
+                        defenderTrait, false
+                    );
+                    DamageResult dr = DamagePipeline.resolve(ctx);
+                    target.takeDamage(dr.finalDamage());
+                    applyReflected(dr);
+                    totalDamage += dr.finalDamage();
+                    log.append(String.format("    - %s (%s): %d damage%n",
+                            m.getName(), m.getElement().sym(), dr.finalDamage()));
                     if (!target.isAlive()) break;
                 }
-                result.append(String.format("  Total OVERCHARGE: %d damage!", totalDamage));
+                log.append(String.format("  Total OVERCHARGE: %d damage!", totalDamage));
                 break;
             }
             default:
-                result.append("  (Jurus tidak dikenali)");
+                log.append("  (Jurus tidak dikenali)");
         }
 
-        return result.toString();
+        return log.toString();
+    }
+
+    private void applyReflected(DamageResult dr) {
+        if (dr.hasReflectedDamage()) {
+            takeDamage(dr.reflectedDamage());
+        }
     }
 
     @Override
@@ -249,52 +321,6 @@ public class PlayerShip extends Ship implements MagicCastable, Describable {
         return false;
     }
 
-    @Override
-    public void displayMageRoster(boolean showSpell) {
-        for (String line : getSelectableMageRosterLines(showSpell)) {
-            System.out.println(line);
-        }
-    }
-
-    public List<String> getMageRosterLines(boolean showSpell) {
-        return getSelectableMageRosterLines(showSpell);
-    }
-
-    public List<String> getSelectableMageRosterLines(boolean showSpell) {
-        List<String> lines = new ArrayList<>();
-        if (roster.isEmpty()) {
-            lines.add("    (Tidak ada Mage di roster)");
-            return lines;
-        }
-        for (int i = 0; i < roster.size(); i++) {
-            lines.add(String.format("    [%d] %s", i + 1, roster.get(i).getInfo(showSpell)));
-        }
-        return lines;
-    }
-
-    public List<String> getMageDisplayLines(boolean showSpell) {
-        List<String> lines = new ArrayList<>();
-        if (roster.isEmpty()) {
-            lines.add("    (Tidak ada Mage di roster)");
-            return lines;
-        }
-        for (Mage mage : roster) {
-            lines.add("    - " + mage.getInfo(showSpell));
-        }
-        return lines;
-    }
-
-    // -------------------------------------------------------------------------
-    // Describable Implementation
-    // -------------------------------------------------------------------------
-
-    @Override
-    public String getFullDescription() {
-        return String.format(
-            "Kapal: %s | HP: %d/%d | Cannon: %d | Mage: %d/%d | Potion: %d | Bounty: $%d",
-            getName(), getCurrentHp(), getMaxHp(), getBaseDamage(), roster.size(), MAX_MAGE, potions, bounty);
-    }
-
     // -------------------------------------------------------------------------
     // Ship Abstract Methods
     // -------------------------------------------------------------------------
@@ -302,14 +328,5 @@ public class PlayerShip extends Ship implements MagicCastable, Describable {
     @Override
     public void takeTurn(Ship opponent) {
         // Input dikelola di GameManager.doPlayerTurn()
-    }
-
-    @Override
-    public String getStatusDisplay() {
-        String shieldTag = shieldActive ? " [SHIELD]" : "";
-        return String.format(
-            "  [PLAYER] %s%s | HP: %s | Cannon: %d | Mage: %d/%d | Potion: %d | $%d",
-            getName(), shieldTag, getHpBar(), getBaseDamage(),
-            roster.size(), MAX_MAGE, potions, bounty);
     }
 }

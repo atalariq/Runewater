@@ -12,5 +12,4 @@ public interface MagicCastable {
     int     castMagic(Ship target, Mage mage);
     String  castSpell(Ship target, Mage mage);
     boolean hasCounterMage(Element enemyElement);
-    void    displayMageRoster(boolean showSpell);
 }
