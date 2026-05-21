@@ -8,6 +8,10 @@ import java.util.List;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
+import com.battleship.model.enums.CannonballType;
+import com.battleship.ui.BattleViewModel;
+import com.battleship.ui.MageInfo;
+
 import com.googlecode.lanterna.SGR;
 import com.googlecode.lanterna.TerminalPosition;
 import com.googlecode.lanterna.TerminalSize;
@@ -24,7 +28,6 @@ import com.googlecode.lanterna.terminal.swing.SwingTerminalFrame;
 public class TerminalUi {
 
     private static final Pattern OPTION_PATTERN = Pattern.compile("^\\[(\\d+)]\\s*(.*)$");
-    private static final Pattern HP_PATTERN = Pattern.compile("(\\d+)/(\\d+)");
 
     private static final TextColor BG = TextColor.Factory.fromString("#050816");
     private static final TextColor PANEL = TextColor.Factory.fromString("#0f172a");
@@ -41,6 +44,8 @@ public class TerminalUi {
     private final InputHelper input;
     private Screen screen;
     private boolean started;
+    private BattleViewModel currentBattleVm;
+    private String lastCaptainName = "";
 
     public TerminalUi(InputHelper input) {
         this.input = input;
@@ -157,6 +162,332 @@ public class TerminalUi {
         return wrap(text, 48);
     }
 
+    // -------------------------------------------------------------------------
+    // Screen-typed interface (Foundation)
+    // -------------------------------------------------------------------------
+
+    public int showTitleScreen(com.battleship.ui.TitleViewModel vm) {
+        try {
+            ensureScreen();
+            drainInput();
+            String namePrompt = (vm.prompt() != null && !vm.prompt().isBlank())
+                ? vm.prompt() : "Masukkan nama kapten:";
+            lastCaptainName = promptText(vm.bannerTitle(), List.of(namePrompt), "Nama:");
+            if (lastCaptainName.isBlank()) {
+                lastCaptainName = "Nusantara";
+            }
+            String choiceFooter = (vm.footer() != null && !vm.footer().isBlank())
+                ? vm.footer() : "Panah / 1-6 pilih, Enter konfirmasi";
+            return promptChoice(vm.bannerTitle(), vm.body(), 1, 6, 1, choiceFooter);
+        } catch (IOException e) {
+            throw new IllegalStateException("Gagal menampilkan title screen", e);
+        }
+    }
+
+    public String getLastCaptainName() {
+        return lastCaptainName;
+    }
+
+    public int showStageSelect(com.battleship.ui.StageViewModel vm) {
+        try {
+            ensureScreen();
+            drainInput();
+            int selected = 0;
+            int count = vm.enemies().size();
+            while (true) {
+                screen.clear();
+                screen.setCursorPosition(null);
+                screen.doResizeIfNecessary();
+                TerminalSize sz = screen.getTerminalSize();
+                TextGraphics g = screen.newTextGraphics();
+                g.setBackgroundColor(BG);
+                g.setForegroundColor(TEXT);
+                g.fill(' ');
+
+                drawBanner(g, sz, vm.stageTitle());
+
+                int mx = 2;
+                int my = 7;
+                int mw = sz.getColumns() - 4;
+
+                drawPanel(g, mx, my, mw, 3, BORDER_ALT, PANEL);
+                if (vm.playerStatusLine() != null && !vm.playerStatusLine().isBlank()) {
+                    drawText(g, mx + 2, my + 1, trim(vm.playerStatusLine(), mw - 4), TEXT, PANEL, false);
+                }
+                int cardY = my + 5;
+                int gap = 2;
+                int cardW = (mw - 4 - gap * (count - 1)) / count;
+                int cardH = 13;
+
+                for (int i = 0; i < count; i++) {
+                    com.battleship.ui.EnemyCardInfo e = vm.enemies().get(i);
+                    boolean isSel = i == selected;
+                    int cx = mx + 2 + i * (cardW + gap);
+                    TextColor fill = isSel ? PANEL_SOFT : PANEL;
+                    TextColor border = isSel ? ACCENT : BORDER_ALT;
+                    drawPanel(g, cx, cardY, cardW, cardH, border, fill);
+
+                    int row = cardY + 1;
+                    drawText(g, cx + 1, row, "[" + (i + 1) + "]", isSel ? ACCENT : SUBTLE, fill, true);
+                    int nameX = cx + 5;
+                    String nameStr = trim(e.name(), cardW - 14);
+                    drawText(g, nameX, row, nameStr, TEXT, fill, true);
+                    if (e.isElite()) {
+                        drawText(g, nameX + nameStr.length() + 1, row, "[ELITE]", ACCENT, fill, true);
+                    }
+                    row++;
+
+                    String elemStr = e.elementSym();
+                    drawText(g, cx + 2, row, elemStr, elementColor(elemStr), fill, true);
+                    row++;
+
+                    int barW = cardW - 6;
+                    int filled = barW > 0 ? (int) Math.round((double) e.hp() / Math.max(1, e.maxHp()) * barW) : 0;
+                    drawBar(g, cx + 2, row, barW, filled, ALERT);
+                    row++;
+
+                    String hpStr = e.hp() + "/" + e.maxHp();
+                    drawText(g, cx + 2, row, hpStr, TEXT, fill, true);
+                    row++;
+
+                    drawText(g, cx + 2, row, "Dmg: ~" + e.damage(), TEXT, fill, false);
+                    row++;
+
+                    String tn = e.traitName();
+                    if (tn != null && !tn.isBlank() && !"Biasa".equals(tn)) {
+                        drawText(g, cx + 2, row, tn, ACCENT, fill, true);
+                    }
+                    row++;
+
+                    drawText(g, cx + 2, row, "Bounty: $" + e.bounty(), ACCENT, fill, false);
+                    row++;
+                    row++;
+
+                    if (i < vm.counterHints().size()) {
+                        String hint = vm.counterHints().get(i);
+                        String[] parts = hint.split(" \\| ");
+                        for (int pi = 0; pi < parts.length && pi < 2; pi++) {
+                            String part = trim(parts[pi], cardW - 4);
+                            TextColor hc = part.contains("Tersedia") ? SUCCESS : SUBTLE;
+                            drawText(g, cx + 2, row++, part, hc, fill, false);
+                        }
+                    }
+                }
+
+                int footerY = cardY + cardH + 1;
+                drawPanel(g, mx + 2, footerY, mw - 4, 3, BORDER_ALT, PANEL_SOFT);
+                drawText(g, mx + 4, footerY + 1, "Select enemy (1-3, Esc to refresh):", TEXT, PANEL_SOFT, false);
+
+                screen.refresh();
+                KeyStroke key = screen.readInput();
+                if (key == null) continue;
+
+                if (key.getKeyType() == KeyType.ArrowLeft) {
+                    selected = (selected - 1 + count) % count;
+                } else if (key.getKeyType() == KeyType.ArrowRight) {
+                    selected = (selected + 1) % count;
+                } else if (key.getKeyType() == KeyType.Enter) {
+                    return selected + 1;
+                } else if (key.getKeyType() == KeyType.Escape) {
+                    return 0;
+                } else if (key.getKeyType() == KeyType.Character && key.getCharacter() != null) {
+                    int digit = Character.digit(key.getCharacter(), 10);
+                    if (digit >= 1 && digit <= count) return digit;
+                }
+            }
+        } catch (IOException e) {
+            throw new IllegalStateException("Gagal membaca input stage select", e);
+        }
+    }
+
+    public void showBattle(BattleViewModel vm) {
+        currentBattleVm = vm;
+        try {
+            ensureScreen();
+            renderBattleLayout(vm, -1, null, null);
+            screen.refresh();
+        } catch (IOException e) {
+            throw new IllegalStateException("Gagal menampilkan battle UI", e);
+        }
+    }
+
+    public int promptMainCommand() {
+        try {
+            ensureScreen();
+            int highlight = 1;
+            while (true) {
+                renderBattleLayout(currentBattleVm, highlight, null, null);
+                screen.refresh();
+
+                KeyStroke key = screen.readInput();
+                if (key == null) continue;
+
+                if (key.getKeyType() == KeyType.Character && key.getCharacter() != null) {
+                    char ch = key.getCharacter();
+                    if (ch >= '1' && ch <= '5') return ch - '0';
+                    if (ch == '0') return 0;
+                }
+                if (key.getKeyType() == KeyType.Escape) return 0;
+
+                if (key.getKeyType() == KeyType.ArrowUp) {
+                    highlight = Math.max(1, highlight - 1);
+                }
+                if (key.getKeyType() == KeyType.ArrowDown) {
+                    highlight = Math.min(5, highlight + 1);
+                }
+                if (key.getKeyType() == KeyType.Enter) {
+                    return highlight;
+                }
+            }
+        } catch (IOException e) {
+            throw new IllegalStateException("Gagal membaca input battle", e);
+        }
+    }
+
+    public int showOverlay(String title, List<String> items) {
+        try {
+            ensureScreen();
+            while (true) {
+                renderBattleLayout(currentBattleVm, -1, items, title);
+                screen.refresh();
+
+                KeyStroke key = screen.readInput();
+                if (key == null) continue;
+
+                if (key.getKeyType() == KeyType.Character && key.getCharacter() != null) {
+                    char ch = key.getCharacter();
+                    int digit = Character.digit(ch, 10);
+                    if (digit >= 1 && digit <= items.size()) return digit;
+                    if (ch == '0') return 0;
+                }
+                if (key.getKeyType() == KeyType.Escape) return 0;
+
+                if (key.getKeyType() == KeyType.ArrowUp) {
+                    currentBattleVm = currentBattleVm; // no-op
+                }
+            }
+        } catch (IOException e) {
+            throw new IllegalStateException("Gagal membaca input overlay", e);
+        }
+    }
+
+    public int showRewardSelect(com.battleship.ui.RewardViewModel vm) {
+        try {
+            ensureScreen();
+            drainInput();
+            int selected = 0;
+            int count = vm.cards().size();
+            while (true) {
+                screen.clear();
+                screen.setCursorPosition(null);
+                screen.doResizeIfNecessary();
+                TerminalSize sz = screen.getTerminalSize();
+                TextGraphics g = screen.newTextGraphics();
+                g.setBackgroundColor(BG);
+                g.setForegroundColor(TEXT);
+                g.fill(' ');
+
+                drawBanner(g, sz, "Reward!");
+
+                int mx = 2;
+                int my = 7;
+                int mw = sz.getColumns() - 4;
+
+                drawPanel(g, mx, my, mw, 6, BORDER_ALT, PANEL);
+                int infoRow = my + 1;
+                if (vm.playerStatusLine() != null && !vm.playerStatusLine().isBlank()) {
+                    drawText(g, mx + 2, infoRow++, trim(vm.playerStatusLine(), mw - 4), TEXT, PANEL, false);
+                }
+
+                StringBuilder roster = new StringBuilder("Roster: ");
+                if (vm.roster() != null && !vm.roster().isEmpty()) {
+                    for (int i = 0; i < Math.min(3, vm.roster().size()); i++) {
+                        com.battleship.ui.MageInfo m = vm.roster().get(i);
+                        if (i > 0) roster.append(", ");
+                        roster.append("Lv.").append(m.level()).append(" ").append(m.name()).append(m.elementSym());
+                    }
+                    if (vm.roster().size() > 3) roster.append(" ...");
+                } else {
+                    roster.append("(kosong)");
+                }
+                drawText(g, mx + 2, infoRow++, trim(roster.toString(), mw - 4), TEXT, PANEL, false);
+
+                StringBuilder ammo = new StringBuilder("Ammo: ");
+                if (vm.ammo() != null) {
+                    boolean first = true;
+                    for (var entry : vm.ammo().entrySet()) {
+                        if (!first) ammo.append(" + ");
+                        first = false;
+                        ammo.append(entry.getKey().getDisplayName()).append("(")
+                            .append(entry.getValue() < 0 ? "\u221E" : entry.getValue()).append(")");
+                    }
+                }
+                drawText(g, mx + 2, infoRow++, trim(ammo.toString(), mw - 4), TEXT, PANEL, false);
+
+                drawText(g, mx + 2, infoRow, "Potions: " + vm.potions(), TEXT, PANEL, false);
+
+                int cardY = my + 8;
+                int gap = 2;
+                int cardW = (mw - 4 - gap * (count - 1)) / count;
+                int cardH = 9;
+
+                for (int i = 0; i < count; i++) {
+                    com.battleship.ui.RewardCardInfo card = vm.cards().get(i);
+                    boolean isSel = i == selected;
+                    int cx = mx + 2 + i * (cardW + gap);
+                    TextColor fill = isSel ? PANEL_SOFT : PANEL;
+                    TextColor border = isSel ? ACCENT : BORDER_ALT;
+                    drawPanel(g, cx, cardY, cardW, cardH, border, fill);
+
+                    int row = cardY + 1;
+                    drawText(g, cx + 2, row, "[" + (i + 1) + "]", isSel ? ACCENT : SUBTLE, fill, true);
+                    row++;
+
+                    drawText(g, cx + 2, row, trim(card.title(), cardW - 6), TEXT, fill, true);
+                    row++;
+
+                    if (card.typeDescription() != null && !card.typeDescription().isBlank()) {
+                        drawText(g, cx + 2, row, trim(card.typeDescription(), cardW - 6), ACCENT, fill, false);
+                    }
+                    row++;
+                    row++;
+
+                    for (String line : wrap(card.description(), cardW - 6)) {
+                        if (row >= cardY + cardH - 2) break;
+                        drawText(g, cx + 2, row++, line, SUBTLE, fill, false);
+                    }
+                }
+
+                int footerY = cardY + cardH + 1;
+                drawPanel(g, mx + 2, footerY, mw - 4, 3, BORDER_ALT, PANEL_SOFT);
+                drawText(g, mx + 4, footerY + 1, "Select reward (1-3, Esc to re-roll):", TEXT, PANEL_SOFT, false);
+
+                screen.refresh();
+                KeyStroke key = screen.readInput();
+                if (key == null) continue;
+
+                if (key.getKeyType() == KeyType.ArrowLeft) {
+                    selected = (selected - 1 + count) % count;
+                } else if (key.getKeyType() == KeyType.ArrowRight) {
+                    selected = (selected + 1) % count;
+                } else if (key.getKeyType() == KeyType.Enter) {
+                    return selected + 1;
+                } else if (key.getKeyType() == KeyType.Escape) {
+                    return 0;
+                } else if (key.getKeyType() == KeyType.Character && key.getCharacter() != null) {
+                    int digit = Character.digit(key.getCharacter(), 10);
+                    if (digit >= 1 && digit <= count) return digit;
+                }
+            }
+        } catch (IOException e) {
+            throw new IllegalStateException("Gagal membaca input reward select", e);
+        }
+    }
+
+    public void showInfo(com.battleship.ui.TitleViewModel vm) {
+        pause(vm.bannerTitle(), vm.body());
+    }
+
     public void shutdown() {
         if (screen == null) {
             return;
@@ -222,11 +553,7 @@ public class TerminalUi {
         g.fill(' ');
 
         drawBanner(g, size, title);
-        if (title.toLowerCase().contains("battle")) {
-            renderBattleScreen(g, size, body, footer, groups, selectedValue);
-        } else {
-            renderGenericScreen(g, size, body, footer, groups, selectedValue, inputValue);
-        }
+        renderGenericScreen(g, size, body, footer, groups, selectedValue, inputValue);
 
         screen.refresh(Screen.RefreshType.COMPLETE);
     }
@@ -384,113 +711,212 @@ public class TerminalUi {
         }
     }
 
-    private void renderBattleScreen(
-            TextGraphics g,
-            TerminalSize size,
-            List<String> body,
-            String footer,
-            List<ChoiceGroup> groups,
-            int selectedValue
-    ) {
-        String playerLine = body.isEmpty() ? "" : body.get(0);
-        String enemyLine = body.size() > 1 ? body.get(1) : "";
-        String stageLine = body.size() > 3 ? body.get(3) : "";
+    private void renderBattleLayout(BattleViewModel vm, int highlight, List<String> overlayItems, String overlayTitle) {
+        screen.clear();
+        screen.setCursorPosition(null);
+        TerminalSize size = screen.getTerminalSize();
+        TextGraphics g = screen.newTextGraphics();
 
-        List<String> logLines = new ArrayList<>();
-        boolean inLog = false;
-        for (String line : body) {
-            if (line.startsWith("Log tempur:")) {
-                inLog = true;
-                continue;
-            }
-            if (line.startsWith("Pilihan:")) {
-                break;
-            }
-            if (inLog && !line.isBlank()) {
-                logLines.add(line.trim());
+        g.setBackgroundColor(BG);
+        g.setForegroundColor(TEXT);
+        g.fill(' ');
+
+        int W = size.getColumns();
+        int H = size.getRows();
+        int left = 2;
+        int contentW = W - 8;
+
+        drawText(g, left, 1, "RUNEWATER", SUCCESS, BG, true);
+        if (vm.stageInfo() != null && !vm.stageInfo().isBlank()) {
+            int stageX = left + contentW - vm.stageInfo().length();
+            if (stageX > left) {
+                drawText(g, stageX, 1, vm.stageInfo(), TEXT, BG, false);
             }
         }
 
-        int width = size.getColumns();
-        drawPanel(g, 3, 8, width - 6, 5, BORDER_ALT, PANEL_SOFT);
-        drawText(g, 5, 9, "Enemy", ALERT, PANEL_SOFT, true);
-        drawText(g, width - 38, 9, trim(stageLine, 32), SUBTLE, PANEL_SOFT, false);
-        drawBattleBar(g, 5, 10, width - 16, enemyLine, ALERT, PANEL_SOFT);
+        String sep = repeat("─", contentW);
+        drawText(g, left, 2, sep, BORDER, BG, false);
 
-        drawPanel(g, 3, 14, width - 6, 5, BORDER, PANEL_ALT);
-        drawText(g, 5, 15, "Crew", SUCCESS, PANEL_ALT, true);
-        drawBattleBar(g, 5, 16, width - 16, playerLine, SUCCESS, PANEL_ALT);
+        String enemyName = "Enemy: " + vm.enemyName();
+        if (vm.enemyElementSym() != null && !vm.enemyElementSym().isBlank()) {
+            enemyName += " " + vm.enemyElementSym();
+        }
+        drawText(g, left, 3, enemyName, TEXT, BG, false);
 
-        drawPanel(g, 3, 20, width - 32, size.getRows() - 22, BORDER, PANEL);
-        drawText(g, 5, 21, "Battle Log", SUCCESS, PANEL, true);
-        int logRow = 23;
-        int logWidth = width - 40;
-        List<String> visibleLogs = logLines.size() > 9 ? logLines.subList(logLines.size() - 9, logLines.size()) : logLines;
-        for (String line : visibleLogs) {
-            for (String wrapped : wrap(line, logWidth)) {
-                if (logRow >= size.getRows() - 3) {
-                    break;
-                }
-                drawText(g, 5, logRow++, wrapped, TEXT, PANEL, false);
+        String rageTag = vm.enemyEnraged() ? " [RAGE!]" : "";
+        String traitTag = "";
+        if (vm.enemyTraitName() != null && !vm.enemyTraitName().isBlank()) {
+            traitTag = "[" + vm.enemyTraitName() + "]" + rageTag;
+        } else if (vm.enemyEnraged()) {
+            traitTag = rageTag;
+        }
+        if (!traitTag.isEmpty()) {
+            int traitX = left + contentW - traitTag.length();
+            if (traitX >= left + 4) {
+                drawText(g, traitX, 3, traitTag, vm.enemyEnraged() ? ALERT : ACCENT, BG, true);
             }
         }
 
-        drawPanel(g, width - 27, 20, 24, size.getRows() - 22, ACCENT, PANEL_SOFT);
-        drawText(g, width - 25, 21, "Command", ACCENT, PANEL_SOFT, true);
-        int optionRow = 23;
-        int labelWidth = 18;
-        for (ChoiceGroup group : groups == null ? Collections.<ChoiceGroup>emptyList() : groups) {
-            if (optionRow >= size.getRows() - 4) {
-                break;
-            }
-            boolean selected = group.option().value() == selectedValue;
-            TextColor bg = selected ? ACCENT : PANEL_SOFT;
-            TextColor fg = selected ? PANEL : TEXT;
-            String label = (selected ? "> " : "  ") + group.option().label();
-            drawText(g, width - 25, optionRow++, pad(label, labelWidth), fg, bg, selected);
-        }
+        drawBattleHpBar(g, left, 4, contentW, vm.enemyHp(), vm.enemyMaxHp(), vm.enemyStatus(), ALERT);
+        drawText(g, left, 5, sep, BORDER, BG, false);
 
-        ChoiceGroup selectedGroup = findSelectedGroup(groups, selectedValue);
-        if (selectedGroup != null) {
-            int focusY = Math.min(size.getRows() - 9, optionRow + 1);
-            drawText(g, width - 25, focusY, "Focus", SUBTLE, PANEL_SOFT, true);
-            drawText(g, width - 25, focusY + 1, trim(selectedGroup.option().label(), 18), TEXT, PANEL_SOFT, false);
-            int detailRow = focusY + 3;
-            for (String detail : selectedGroup.details()) {
-                for (String wrapped : wrap(detail, 18)) {
-                    if (detailRow >= size.getRows() - 3) {
-                        break;
-                    }
-                    drawText(g, width - 25, detailRow++, wrapped, SUBTLE, PANEL_SOFT, false);
-                }
+        int logTop = 6;
+        int logBottom = H - 9;
+        List<String> log = vm.battleLog();
+        if (log != null) {
+            int maxVisible = logBottom - logTop;
+            int startIdx = Math.max(0, log.size() - maxVisible);
+            int row = logTop;
+            for (int i = startIdx; i < log.size() && row < logBottom; i++) {
+                drawText(g, left, row++, log.get(i), TEXT, BG, false);
             }
         }
 
-        if (footer != null && !footer.isBlank()) {
-            drawText(g, width - 25, size.getRows() - 3, footer, SUBTLE, PANEL_SOFT, false);
+        if (overlayItems != null) {
+            drawOverlayBox(g, left, left + contentW, logTop, logBottom, overlayTitle, overlayItems);
+        }
+
+        drawText(g, left, H - 8, sep, BORDER, BG, false);
+        drawText(g, left, H - 7, "Crew: " + vm.playerName(), SUCCESS, BG, true);
+        if (vm.playerShielded()) {
+            String shieldStr = " [SHIELD]";
+            drawText(g, left + 6 + vm.playerName().length(), H - 7, shieldStr, ACCENT, BG, true);
+        }
+        drawBattleHpBar(g, left, H - 6, contentW, vm.playerHp(), vm.playerMaxHp(), vm.playerStatus(), SUCCESS);
+        drawText(g, left, H - 5, sep, BORDER, BG, false);
+
+        StringBuilder cmdLine = new StringBuilder();
+        for (int i = 1; i <= 5; i++) {
+            String prefix = (i == highlight) ? ">" : " ";
+            cmdLine.append(prefix).append("[").append(i).append("]").append(getCommandLabel(i));
+            if (i < 5) cmdLine.append("  ");
+        }
+        drawText(g, left, H - 4, cmdLine.toString(), TEXT, BG, false);
+
+        if (highlight >= 1 && highlight <= 5) {
+            String focus = getFocusDetail(vm, highlight);
+            if (focus != null && !focus.isEmpty()) {
+                drawText(g, left, H - 3, "  " + focus, SUBTLE, BG, false);
+            }
         }
     }
 
-    private void drawBattleBar(TextGraphics g, int x, int y, int width, String line, TextColor fillColor, TextColor bgColor) {
-        HpStats stats = parseHpStats(line);
-        String cleaned = line.replace("PLAYER :", "").replace("MUSUH  :", "").trim();
-        String shipName = cleaned.contains("|") ? cleaned.substring(0, cleaned.indexOf('|')).trim() : cleaned;
-        int nameWidth = Math.min(width - 28, Math.max(16, shipName.length()));
-        drawText(g, x, y, trim(shipName, nameWidth), TEXT, bgColor, false);
-
-        int barX = x + nameWidth + 2;
-        int barW = Math.max(18, width - nameWidth - 12);
-        drawBar(g, barX, y, barW, stats.current(), stats.max(), fillColor, bgColor);
-        drawText(g, barX + barW + 1, y, stats.current() + "/" + stats.max(), TEXT, bgColor, true);
-    }
-
-    private void drawBar(TextGraphics g, int x, int y, int width, int current, int max, TextColor fillColor, TextColor bgColor) {
+    private void drawBattleHpBar(TextGraphics g, int x, int y, int width, int current, int max, String statusTag, TextColor barColor) {
         int safeMax = Math.max(1, max);
-        int filled = (int) Math.round((double) current / safeMax * width);
+        int barW = Math.min(width - 22, 30);
+        int filled = (int) Math.round((double) current / safeMax * barW);
+        drawBar(g, x, y, barW, filled, barColor);
+        String hpText = String.format(" %d/%d", current, max);
+        drawText(g, x + barW + 1, y, hpText, TEXT, BG, true);
+        if (statusTag != null && !statusTag.isBlank()) {
+            drawText(g, x + barW + 1 + hpText.length(), y, " " + statusTag, statusTag.contains("FROZEN") ? BORDER_ALT : ALERT, BG, true);
+        }
+    }
+
+    private void drawBar(TextGraphics g, int x, int y, int width, int filled, TextColor fillColor) {
         for (int i = 0; i < width; i++) {
             boolean on = i < filled;
             drawText(g, x + i, y, " ", TEXT, on ? fillColor : PANEL, false);
         }
+    }
+
+    private void drawOverlayBox(TextGraphics g, int left, int right, int logTop, int logBottom, String title, List<String> items) {
+        int contentW = right - left;
+        int boxW = Math.min(44, contentW - 4);
+        int boxH = Math.min(items.size() + 4, logBottom - logTop);
+        int boxX = left + (contentW - boxW) / 2;
+        int boxY = logTop + Math.max(0, ((logBottom - logTop) - boxH) / 2);
+
+        drawPanel(g, boxX, boxY, boxW, boxH, BORDER, PANEL_ALT);
+
+        drawText(g, boxX + 2, boxY + 1, title, ACCENT, PANEL_ALT, true);
+
+        int y = boxY + 3;
+        for (int i = 0; i < items.size() && y < boxY + boxH - 2; i++) {
+            drawText(g, boxX + 2, y++, items.get(i), TEXT, PANEL_ALT, false);
+        }
+
+        drawText(g, boxX + 2, boxY + boxH - 2, "[Esc/0] Batal", SUBTLE, PANEL_ALT, false);
+    }
+
+    private static String getCommandLabel(int cmd) {
+        return switch (cmd) {
+            case 1 -> "Tembak";
+            case 2 -> "Sihir";
+            case 3 -> "Jurus";
+            case 4 -> "Bertahan";
+            case 5 -> "Potion";
+            default -> "?";
+        };
+    }
+
+    private static String getFocusDetail(BattleViewModel vm, int cmd) {
+        return switch (cmd) {
+            case 1 -> buildCannonFocus(vm);
+            case 2 -> buildMagicFocus(vm);
+            case 3 -> buildSpellFocus(vm);
+            case 4 -> "Bertahan: -50% damage giliran ini";
+            case 5 -> "Potion: " + vm.potions() + " tersisa, heal 50 HP";
+            default -> "";
+        };
+    }
+
+    private static String buildCannonFocus(BattleViewModel vm) {
+        StringBuilder sb = new StringBuilder("Ammo:");
+        for (CannonballType t : CannonballType.values()) {
+            int count = vm.ammo().getOrDefault(t, 0);
+            sb.append(" ").append(t.getDisplayName()).append("=");
+            sb.append(count < 0 ? "∞" : count);
+        }
+        if (vm.enemyTraitName() != null && !vm.enemyTraitName().isBlank()) {
+            sb.append(" | Trait: ").append(vm.enemyTraitName());
+        }
+        return sb.toString();
+    }
+
+    private static String buildMagicFocus(BattleViewModel vm) {
+        List<MageInfo> roster = vm.roster();
+        if (roster == null || roster.isEmpty()) return "Tidak ada Mage";
+        StringBuilder sb = new StringBuilder("Mage: ");
+        for (int i = 0; i < Math.min(3, roster.size()); i++) {
+            MageInfo m = roster.get(i);
+            sb.append(m.name()).append("(").append(m.elementSym()).append(") ");
+        }
+        if (roster.size() > 3) sb.append("+").append(roster.size() - 3).append(" lagi");
+        return sb.toString();
+    }
+
+    private static String buildSpellFocus(BattleViewModel vm) {
+        List<MageInfo> roster = vm.roster();
+        if (roster == null || roster.isEmpty()) return "Tidak ada Mage";
+        StringBuilder sb = new StringBuilder("Jurus: ");
+        for (int i = 0; i < Math.min(3, roster.size()); i++) {
+            MageInfo m = roster.get(i);
+            sb.append(m.name()).append("=").append(m.spellUsed() ? "USED" : "READY").append(" ");
+        }
+        if (roster.size() > 3) sb.append("...");
+        return sb.toString();
+    }
+
+    private static TextColor elementColor(String sym) {
+        String s = sym == null ? "" : sym.trim();
+        if (s.contains("FIRE"))   return TextColor.Factory.fromString("#ef4444");
+        if (s.contains("WATER"))  return TextColor.Factory.fromString("#3b82f6");
+        if (s.contains("STORM"))  return TextColor.Factory.fromString("#eab308");
+        return TEXT;
+    }
+
+    private static String rarityStars(int weight) {
+        if (weight <= 2) return "\u2605\u2605\u2605\u2605\u2605";
+        if (weight <= 4) return "\u2605\u2605\u2605\u2605\u2606";
+        if (weight <= 6) return "\u2605\u2605\u2605\u2606\u2606";
+        if (weight <= 9) return "\u2605\u2605\u2606\u2606\u2606";
+        return "\u2605\u2606\u2606\u2606\u2606";
+    }
+
+    private static String repeat(String s, int count) {
+        if (count <= 0) return "";
+        return s.repeat(count);
     }
 
     private ChoiceGroup findSelectedGroup(List<ChoiceGroup> groups, int selectedValue) {
@@ -641,14 +1067,6 @@ public class TerminalUi {
         return text.length() <= width ? text : text.substring(0, Math.max(0, width - 3)) + "...";
     }
 
-    private HpStats parseHpStats(String line) {
-        Matcher matcher = HP_PATTERN.matcher(line);
-        if (matcher.find()) {
-            return new HpStats(Integer.parseInt(matcher.group(1)), Integer.parseInt(matcher.group(2)));
-        }
-        return new HpStats(1, 1);
-    }
-
     private void drainInput() throws IOException {
         if (screen == null) {
             return;
@@ -661,8 +1079,6 @@ public class TerminalUi {
     private record OptionLine(int value, String label) { }
 
     private record ChoiceGroup(OptionLine option, List<String> details) { }
-
-    private record HpStats(int current, int max) { }
 
     private static final class ChoiceGroupBuilder {
         private final OptionLine option;
